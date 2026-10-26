@@ -1,0 +1,8 @@
+# Animated figures for Appendix B.1 of the research document.
+#
+# Expected file:
+#   product_visual.gif   Animated overview cycling five SBOM Workspace captures,
+#                        referenced from README.md, Appendix B.1.
+#
+# This placeholder exists so that the directory is tracked by Git before the
+# animation is committed; it may be deleted once the GIF is in place.
