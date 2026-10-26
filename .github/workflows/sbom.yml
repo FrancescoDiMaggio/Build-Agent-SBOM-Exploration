@@ -1,0 +1,95 @@
+name: SBOM
+
+# Research pipeline: derive a CycloneDX SBOM from this project's resolved
+# dependency tree on every build, validate it against the ServiceNow
+# ingestion contract, and publish it to the SBOM Workspace.
+#
+# See README.md, section 6, for the design rationale.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sbom-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned deliberately. The generator supports CycloneDX 1.2-1.6 and defaults
+  # to 1.6; the ServiceNow parser dispatch table terminates at 1.6. A future
+  # generator release defaulting to 1.7 would break ingestion, so neither the
+  # generator version nor the spec version is left implicit.
+  CYCLONEDX_NPM_VERSION: 6.0.1
+  CYCLONEDX_SPEC_VERSION: '1.6'
+  SBOM_FILE: sbom.json
+
+jobs:
+  sbom:
+    name: Derive, validate and publish SBOM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # A lock file is the source of resolved transitive versions, which are in
+      # turn the source of valid Package URLs. Without it the derived SBOM is
+      # ingested but analytically inert (README section 4.3b), so the absence of
+      # a lock file is treated as a hard error rather than silently worked around.
+      - name: Assert lock file is present
+        run: |
+          if [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
+            echo "::error title=No lock file::package-lock.json is absent. Run 'npm install' and commit the lock file. Generating an SBOM without it yields unresolved versions and invalid PURLs, which the ServiceNow enrichment integrations silently exclude."
+            exit 1
+          fi
+
+      - name: Install resolved dependency tree
+        run: npm ci
+
+      # Development dependencies are retained on purpose: for a ServiceNow
+      # Fluent project the entire dependency set is declared under
+      # devDependencies, so '--omit dev' would produce an empty SBOM.
+      - name: Derive CycloneDX SBOM
+        run: |
+          npx --yes "@cyclonedx/cyclonedx-npm@${CYCLONEDX_NPM_VERSION}" \
+            --output-format JSON \
+            --spec-version "${CYCLONEDX_SPEC_VERSION}" \
+            --output-file "${SBOM_FILE}" \
+            --mc-type application \
+            --validate
+
+      - name: Validate against ServiceNow ingestion contract
+        run: node scripts/validate-sbom.mjs "${SBOM_FILE}"
+
+      - name: Archive SBOM as build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.run_id }}
+          path: ${{ env.SBOM_FILE }}
+          if-no-files-found: error
+          retention-days: 90
+
+      # Publication is restricted to the default branch. Pull request runs still
+      # derive and validate, so a defective SBOM fails review, but the platform
+      # inventory reflects integrated code only.
+      - name: Publish to ServiceNow SBOM Workspace
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
+        env:
+          SN_INSTANCE: ${{ vars.SN_INSTANCE }}
+          SN_BUSINESS_APP_ID: ${{ vars.SN_BUSINESS_APP_ID }}
+          SN_SBOM_USER: ${{ secrets.SN_SBOM_USER }}
+          SN_SBOM_PASSWORD: ${{ secrets.SN_SBOM_PASSWORD }}
+          SN_LIFECYCLE_STAGE: production
+          SN_BUILD_ID: ${{ github.run_id }}
+          SN_SBOM_SOURCE: cyclonedx-npm
+        run: node scripts/upload-sbom.mjs "${SBOM_FILE}"

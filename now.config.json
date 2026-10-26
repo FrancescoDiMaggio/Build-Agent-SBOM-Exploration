@@ -1,0 +1,6 @@
+{
+  "scope": "x_snc_build_ag3dm6",
+  "scopeId": "51b5fe230f0c1b10083782d300d1b219",
+  "name": "Build Agent SBOM Exploration",
+  "tsconfigPath": "./src/server/tsconfig.json"
+}
